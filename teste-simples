@@ -1,0 +1,136 @@
+//teste simples e esqueleto do projeto
+#include <stdio.h>
+#include "pico/stdlib.h"
+#include "hardware/pio.h"
+#include "ws2812.pio.h"
+#include "hardware/clocks.h"
+
+// ==================== CONFIGURAÇÕES ====================
+
+// Botões
+#define BOTAO_A 5
+#define BOTAO_B 6
+
+// Matriz de LEDs (WS2812)
+#define PINO_MATRIZ 7
+#define TOTAL_LEDS 25
+
+// ==================== VARIÁVEL GLOBAL ====================
+
+// Guarda o estado do sistema (ligado/desligado)
+volatile bool sistema_ligado = false;
+
+// ==================== CONFIGURAÇÃO DO WS2812 ====================
+
+static inline void inicializar_matriz(PIO pio, int sm, uint offset, uint pin, float freq, bool rgbw) {
+
+    // Configura o pino da matriz
+    pio_gpio_init(pio, pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+
+    // Configuração padrão do programa
+    pio_sm_config config = ws2812_program_get_default_config(offset);
+
+    sm_config_set_sideset_pins(&config, pin);
+    sm_config_set_out_shift(&config, false, true, rgbw ? 32 : 24);
+    sm_config_set_fifo_join(&config, PIO_FIFO_JOIN_TX);
+
+    // Ajuste de tempo
+    int ciclos_por_bit = 10;
+    float divisor_clock = clock_get_hz(clk_sys) / (freq * ciclos_por_bit);
+    sm_config_set_clkdiv(&config, divisor_clock);
+
+    // Inicializa máquina de estado
+    pio_sm_init(pio, sm, offset, &config);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+// ==================== INTERRUPÇÃO DOS BOTÕES ====================
+
+void tratar_botao(uint gpio, uint32_t eventos) {
+
+    // Se qualquer botão for pressionado, alterna o estado
+    if (gpio == BOTAO_A || gpio == BOTAO_B) {
+        sistema_ligado = !sistema_ligado;
+    }
+}
+
+// ==================== CONTROLE DA MATRIZ ====================
+
+// Envia um LED para a matriz
+static inline void enviar_cor(uint32_t cor) {
+    pio_sm_put_blocking(pio0, 0, cor << 8u);
+}
+
+// Converte RGB para formato da matriz (GRB)
+uint32_t criar_cor(uint8_t r, uint8_t g, uint8_t b) {
+    return ((uint32_t)(g) << 16) |
+           ((uint32_t)(r) << 8)  |
+           (uint32_t)(b);
+}
+
+// ==================== PROGRAMA PRINCIPAL ====================
+
+int main() {
+
+    stdio_init_all();
+
+    // -------- CONFIGURAÇÃO DOS BOTÕES --------
+
+    gpio_init(BOTAO_A);
+    gpio_set_dir(BOTAO_A, GPIO_IN);
+    gpio_pull_up(BOTAO_A);
+
+    gpio_init(BOTAO_B);
+    gpio_set_dir(BOTAO_B, GPIO_IN);
+    gpio_pull_up(BOTAO_B);
+
+    // Ativa interrupção
+    gpio_set_irq_enabled_with_callback(
+        BOTAO_A,
+        GPIO_IRQ_EDGE_FALL,
+        true,
+        &tratar_botao
+    );
+
+    gpio_set_irq_enabled(
+        BOTAO_B,
+        GPIO_IRQ_EDGE_FALL,
+        true
+    );
+
+    // -------- CONFIGURAÇÃO DA MATRIZ --------
+
+    PIO pio = pio0;
+    int maquina_estado = 0;
+
+    uint offset = pio_add_program(pio, &ws2812_program);
+
+    inicializar_matriz(pio, maquina_estado, offset, PINO_MATRIZ, 800000, false);
+
+    // ==================== LOOP PRINCIPAL ====================
+
+    while (true) {
+
+        if (sistema_ligado) {
+
+            // Liga todos os LEDs (vermelho)
+            for (int i = 0; i < TOTAL_LEDS; i++) {
+                enviar_cor(criar_cor(50, 0, 0));
+            }
+
+            printf("SISTEMA LIGADO\n");
+
+        } else {
+
+            // Desliga todos os LEDs
+            for (int i = 0; i < TOTAL_LEDS; i++) {
+                enviar_cor(criar_cor(0, 0, 0));
+            }
+
+            printf("SISTEMA DESLIGADO\n");
+        }
+
+        sleep_ms(200);
+    }
+}
