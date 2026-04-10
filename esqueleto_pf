@@ -1,0 +1,193 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include "pico/stdlib.h"
+#include "hardware/i2c.h"
+#include "hardware/clocks.h"
+#include "hardware/pio.h"
+#include "ssd1306.h"
+#include "ws2812.pio.h"
+
+// ==================== DEFINIÇÕES ====================
+
+// Botões
+#define BOTAO_A 5
+#define BOTAO_B 6
+
+// Matriz de LEDs
+#define PINO_MATRIZ 7
+#define TOTAL_LEDS 25
+
+// Display OLED (I2C)
+#define SCL_PIN 15
+#define SDA_PIN 14
+
+// Variável que controla se o sistema está ligado ou desligado
+volatile bool sistema_ligado = false;
+
+// Estrutura do display OLED
+ssd1306_t disp;
+
+// ==================== PROTÓTIPOS ====================
+
+// Função responsável por configurar e mostrar algo no display
+void setup_display();
+
+
+// ==================== CONFIGURAÇÃO DA MATRIZ ====================
+
+// Inicializa a matriz de LEDs WS2812
+static inline void inicializar_matriz(PIO pio, int sm, uint offset, uint pin, float freq, bool rgbw) {
+
+    // Configura o pino da matriz como saída
+    pio_gpio_init(pio, pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+
+    // Carrega a configuração padrão do programa WS2812
+    pio_sm_config config = ws2812_program_get_default_config(offset);
+
+    // Define o pino que será usado
+    sm_config_set_sideset_pins(&config, pin);
+
+    // Define como os bits serão enviados
+    sm_config_set_out_shift(&config, false, true, rgbw ? 32 : 24);
+
+    // Junta FIFO para envio contínuo
+    sm_config_set_fifo_join(&config, PIO_FIFO_JOIN_TX);
+
+    // Ajusta a velocidade de envio dos dados
+    int ciclos_por_bit = 10;
+    float divisor_clock = clock_get_hz(clk_sys) / (freq * ciclos_por_bit);
+    sm_config_set_clkdiv(&config, divisor_clock);
+
+    // Inicializa e ativa a máquina de estado
+    pio_sm_init(pio, sm, offset, &config);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+// Envia uma cor para um LED da matriz
+static inline void enviar_cor(uint32_t cor) {
+    pio_sm_put_blocking(pio0, 0, cor << 8u);
+}
+
+// Converte RGB para o formato que a matriz entende (GRB)
+uint32_t criar_cor(uint8_t r, uint8_t g, uint8_t b) {
+    return ((uint32_t)(g) << 16) |
+           ((uint32_t)(r) << 8)  |
+           (uint32_t)(b);
+}
+
+
+// ==================== BOTÕES ====================
+
+// Essa função é chamada automaticamente quando um botão é pressionado
+void tratar_botao(uint gpio, uint32_t eventos) {
+
+    // Se qualquer botão for pressionado, alterna o estado do sistema
+    if (gpio == BOTAO_A || gpio == BOTAO_B) {
+        sistema_ligado = !sistema_ligado;
+    }
+}
+
+
+// ==================== DISPLAY ====================
+
+// Configura o display e mostra uma mensagem inicial
+void setup_display()
+{
+    // Inicializa o I2C
+    i2c_init(i2c1, 400000);
+
+    // Configura os pinos como I2C
+    gpio_set_function(SDA_PIN, GPIO_FUNC_I2C);
+    gpio_set_function(SCL_PIN, GPIO_FUNC_I2C);
+
+    // Ativa resistores de pull-up (necessário no I2C)
+    gpio_pull_up(SDA_PIN);
+    gpio_pull_up(SCL_PIN);
+
+    // Inicializa o display OLED
+    disp.external_vcc = false;
+    ssd1306_init(&disp, 128, 64, 0x3C, i2c1);
+
+    // Limpa a tela
+    ssd1306_clear(&disp);
+
+    // Escreve mensagens na tela
+    ssd1306_draw_string(&disp, 5, 10, 2, "deu certo disgraxa");
+    ssd1306_draw_string(&disp, 5, 30, 1, "Oi, sou RP2040");
+
+    // Atualiza o display (sem isso nada aparece)
+    ssd1306_show(&disp);
+}
+
+
+// ==================== PROGRAMA PRINCIPAL ====================
+
+int main() {
+
+    // Inicializa comunicação (USB, printf, etc.)
+    stdio_init_all();
+
+    // Liga o display e mostra a mensagem
+    setup_display();
+
+    // -------- CONFIGURAÇÃO DOS BOTÕES --------
+
+    gpio_init(BOTAO_A);
+    gpio_set_dir(BOTAO_A, GPIO_IN);
+    gpio_pull_up(BOTAO_A);
+
+    gpio_init(BOTAO_B);
+    gpio_set_dir(BOTAO_B, GPIO_IN);
+    gpio_pull_up(BOTAO_B);
+
+    // Ativa interrupção para o botão A
+    gpio_set_irq_enabled_with_callback(
+        BOTAO_A,
+        GPIO_IRQ_EDGE_FALL,
+        true,
+        &tratar_botao
+    );
+
+    // Ativa interrupção para o botão B
+    gpio_set_irq_enabled(
+        BOTAO_B,
+        GPIO_IRQ_EDGE_FALL,
+        true
+    );
+
+    // -------- CONFIGURAÇÃO DA MATRIZ --------
+
+    PIO pio = pio0;
+    int sm = 0;
+
+    uint offset = pio_add_program(pio, &ws2812_program);
+
+    inicializar_matriz(pio, sm, offset, PINO_MATRIZ, 800000, false);
+
+    // ================= LOOP PRINCIPAL =================
+
+    while (true) {
+
+        if (sistema_ligado) {
+
+            // Liga todos os LEDs (vermelho)
+            for (int i = 0; i < TOTAL_LEDS; i++) {
+                enviar_cor(criar_cor(50, 0, 0));
+            }
+
+            printf("SISTEMA LIGADO\n");
+
+        } else {
+
+            // Desliga todos os LEDs
+            for (int i = 0; i < TOTAL_LEDS; i++) {
+                enviar_cor(criar_cor(0, 0, 0));
+            }
+
+            printf("SISTEMA DESLIGADO\n");
+        }
+
+        sleep_ms(200);
+    }
+}
