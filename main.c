@@ -55,7 +55,7 @@ int main() {
                 int inv = TOTAL_LEDS - 1 - i;
 
                 if (coracao[inv])
-                    enviar_cor(criar_cor(50, 0, 0));
+                    enviar_cor(criar_cor(0, 50, 0));
                 else
                     enviar_cor(criar_cor(0, 0, 0));
             }
